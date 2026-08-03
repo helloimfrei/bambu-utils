@@ -5,6 +5,7 @@ import ssl
 import threading
 from collections.abc import Callable
 from itertools import count
+from pathlib import PurePosixPath
 from typing import Any, cast
 
 import paho.mqtt.client as mqtt
@@ -61,21 +62,26 @@ class MqttClient:
         return response
 
     def status(self) -> JsonObject:
-        sequence = self.next_sequence()
-        payload: JsonObject = {
-            "pushing": {
-                "sequence_id": sequence,
-                "command": "pushall",
-                "version": 1,
-                "push_target": 1,
-            }
-        }
+        payload = _pushall_command(self.next_sequence())
 
         def is_status(message: JsonObject) -> bool:
             detail = message.get("print")
             return isinstance(detail, dict) and detail.get("command") == "push_status"
 
         return self._exchange(payload, is_status)
+
+    def wait_for_print_start(self, remote_path: str) -> JsonObject:
+        """Wait until telemetry confirms that the submitted file is running."""
+
+        filename = PurePosixPath(remote_path).name
+        payload = _pushall_command(self.next_sequence())
+        try:
+            return self._exchange(payload, _print_start_matcher(filename))
+        except TimeoutError as error:
+            raise TimeoutError(
+                f"print was submitted, but {filename} did not reach RUNNING "
+                f"within {self._config.timeout:g} seconds; check the printer"
+            ) from error
 
     def _exchange(
         self,
@@ -175,3 +181,34 @@ def _command_sequence(payload: JsonObject, section: str) -> str:
     if not isinstance(sequence, str):
         raise ValueError("command payload has no string sequence_id")
     return sequence
+
+
+def _pushall_command(sequence: str) -> JsonObject:
+    return {
+        "pushing": {
+            "sequence_id": sequence,
+            "command": "pushall",
+            "version": 1,
+            "push_target": 1,
+        }
+    }
+
+
+def _print_start_matcher(filename: str) -> Callable[[JsonObject], bool]:
+    file_seen = False
+
+    def matches(message: JsonObject) -> bool:
+        nonlocal file_seen
+        detail = message.get("print")
+        if not isinstance(detail, dict):
+            return False
+
+        for key in ("gcode_file", "subtask_name"):
+            candidate = detail.get(key)
+            if isinstance(candidate, str) and PurePosixPath(candidate).name == filename:
+                file_seen = True
+
+        state = detail.get("gcode_state")
+        return file_seen and isinstance(state, str) and state.upper() == "RUNNING"
+
+    return matches

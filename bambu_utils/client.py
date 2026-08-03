@@ -82,6 +82,7 @@ class BambuPrinter:
 
         self.files.upload(local, remote)
         self._mqtt.request(payload, section="print", command=command)
+        self._mqtt.wait_for_print_start(remote)
         return remote
 
     def status(self) -> JsonObject:

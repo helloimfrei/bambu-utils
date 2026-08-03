@@ -68,8 +68,11 @@ plugin, or from OrcaSlicer. The usual output is `.gcode.3mf`.
 
 The wrapper runs from the repository so it picks up the local `.env`. With no
 flag it only uploads to `cache/` over FTPS. `--print` additionally validates the
-archive, computes its MD5, and sends the MQTT `project_file` command. It prints
-plate 1 from the external spool by default.
+archive, computes its MD5, sends the MQTT `project_file` command, and waits for
+telemetry to confirm that the uploaded filename reached `RUNNING`. It prints
+plate 1 from the external spool by default. If confirmation does not arrive
+within `BAMBU_TIMEOUT`, the command exits nonzero without submitting a second
+print request.
 
 Select another plate or map project filaments to AMS trays:
 

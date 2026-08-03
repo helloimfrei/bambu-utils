@@ -134,7 +134,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     timelapse=args.timelapse,
                 )
                 remote = printer.send(args.local, remote_path=args.remote, options=options)
-                print(f"Submitted {remote} for printing (plate {options.plate})")
+                print(f"Print confirmed running: {remote} (plate {options.plate})")
             case _:
                 raise AssertionError(f"unhandled command: {args.command}")
         return 0
