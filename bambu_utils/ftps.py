@@ -147,7 +147,8 @@ class FileTransferClient:
     def list(self, remote_path: str = "/") -> list[str]:
         remote = normalize_remote_path(remote_path, allow_root=True)
         with self._session() as ftp:
-            return sorted(ftp.nlst(remote))
+            names = ftp.nlst() if remote == "." else ftp.nlst(remote)
+            return sorted(names)
 
     def delete(self, remote_path: str) -> None:
         remote = normalize_remote_path(remote_path)

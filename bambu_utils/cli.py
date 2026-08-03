@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ftplib
 import json
 import os
 import sys
@@ -137,7 +138,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             case _:
                 raise AssertionError(f"unhandled command: {args.command}")
         return 0
-    except (ConnectionError, OSError, RuntimeError, TimeoutError, ValueError) as error:
+    except (
+        ConnectionError,
+        ftplib.Error,
+        OSError,
+        RuntimeError,
+        TimeoutError,
+        ValueError,
+    ) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 

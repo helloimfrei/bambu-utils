@@ -2,6 +2,7 @@ from io import BytesIO
 from pathlib import Path
 from types import TracebackType
 from typing import Self, cast
+from unittest.mock import patch
 
 import pytest
 
@@ -11,6 +12,7 @@ from bambu_utils.ftps import (
     default_remote_path,
     normalize_remote_path,
 )
+from bambu_utils.config import PrinterConfig
 
 
 class _DataConnection:
@@ -47,6 +49,15 @@ class _FakeFTP:
 
     def voidresp(self) -> None:
         self.completed = True
+
+
+class _ListFTP:
+    def __init__(self) -> None:
+        self.paths: list[str | None] = []
+
+    def nlst(self, path: str | None = None) -> list[str]:
+        self.paths.append(path)
+        return ["z.gcode.3mf", "a.gcode.3mf"]
 
 
 @pytest.mark.parametrize(
@@ -91,3 +102,36 @@ def test_store_streams_the_file_and_waits_for_completion() -> None:
     assert ftp.connection.blocks == [b"slice"]
     assert progress == [5]
     assert ftp.completed is True
+
+
+def test_list_uses_bare_nlst_for_the_printer_root() -> None:
+    ftp = _ListFTP()
+    client = FileTransferClient(
+        PrinterConfig(host="printer", access_code="code", serial="serial")
+    )
+
+    with patch.object(
+        client,
+        "_session",
+        return_value=_single_session(cast(ImplicitFTP_TLS, ftp)),
+    ):
+        names = client.list("/")
+
+    assert ftp.paths == [None]
+    assert names == ["a.gcode.3mf", "z.gcode.3mf"]
+
+
+class _single_session:
+    def __init__(self, ftp: ImplicitFTP_TLS) -> None:
+        self._ftp = ftp
+
+    def __enter__(self) -> ImplicitFTP_TLS:
+        return self._ftp
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        del exc_type, exc_value, traceback
