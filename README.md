@@ -45,6 +45,8 @@ The repository already contains a gitignored `.env` template:
 BAMBU_HOST=192.168.1.50
 BAMBU_SERIAL=01P00A000000000
 BAMBU_ACCESS_CODE=12345678
+BAMBU_PRINTER_MODEL=P1S
+BAMBU_NOZZLE_DIAMETER=0.4
 BAMBU_TIMEOUT=15
 ```
 
@@ -52,6 +54,10 @@ The CLI reads `.env` from the current working directory. Precedence is CLI
 flag, shell environment, `.env`, then built-in default. The access code is a
 password: never commit the real `.env`. `.env.example` is the safe template for
 other checkouts.
+
+`BAMBU_PRINTER_MODEL` accepts `X1C`, `X1E`, `P1S`, `P1P`, `A1 Mini`, or
+`A1`. Newer printer families are intentionally rejected until their different
+print payloads are implemented and hardware-validated.
 
 ## Send a sliced file
 
@@ -73,6 +79,18 @@ telemetry to confirm that the uploaded filename reached `RUNNING`. It prints
 plate 1 from the external spool by default. If confirmation does not arrive
 within `BAMBU_TIMEOUT`, the command exits nonzero without submitting a second
 print request.
+
+Before uploading a print, the command fails closed unless all of these agree:
+
+- configured model and nozzle in `.env`;
+- model inferred from the connected printer serial;
+- nozzle diameter reported live by the printer;
+- model name, model ID, and nozzle metadata embedded independently in the 3MF
+  project, slice information, and selected plate G-code.
+
+Missing or conflicting metadata is rejected before FTPS upload. The upload-only
+form does not execute a file and therefore does not apply this gate. Starting a
+file manually from the printer screen also bypasses this utility's validation.
 
 Select another plate or map project filaments to AMS trays:
 

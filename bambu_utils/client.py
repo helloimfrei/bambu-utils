@@ -7,7 +7,14 @@ from typing import cast
 from bambu_utils.config import PrinterConfig
 from bambu_utils.ftps import FileTransferClient, default_remote_path, normalize_remote_path
 from bambu_utils.mqtt import JsonObject, MqttClient
-from bambu_utils.project import file_md5, sliced_3mf_plates
+from bambu_utils.project import (
+    SliceMetadata,
+    file_md5,
+    gcode_metadata,
+    sliced_3mf_metadata,
+    sliced_3mf_plates,
+    validate_slice_for_printer,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +70,7 @@ class BambuPrinter:
                 raise ValueError(
                     f"plate {selected.plate} is not present in {local}; available: {available}"
                 )
+            metadata = sliced_3mf_metadata(local, plates[selected.plate])
             payload = project_file_command(
                 sequence=self._mqtt.next_sequence(),
                 serial=self.config.serial,
@@ -73,6 +81,7 @@ class BambuPrinter:
             )
             command = "project_file"
         elif local.name.lower().endswith(".gcode"):
+            metadata = gcode_metadata(local)
             payload = gcode_file_command(
                 sequence=self._mqtt.next_sequence(), remote_path=remote
             )
@@ -80,6 +89,7 @@ class BambuPrinter:
         else:
             raise ValueError("print input must be a sliced .3mf or a .gcode file")
 
+        self._validate_compatibility(metadata)
         self.files.upload(local, remote)
         self._mqtt.request(payload, section="print", command=command)
         self._mqtt.wait_for_print_start(remote)
@@ -100,6 +110,34 @@ class BambuPrinter:
     def _print_control(self, command: str) -> JsonObject:
         payload = print_control_command(self._mqtt.next_sequence(), command)
         return self._mqtt.request(payload, section="print", command=command, qos=1)
+
+    def _validate_compatibility(self, metadata: SliceMetadata) -> None:
+        if self.config.printer_model is None:
+            raise ValueError(
+                "BAMBU_PRINTER_MODEL is required for safe print submission"
+            )
+        if self.config.nozzle_diameter is None:
+            raise ValueError(
+                "BAMBU_NOZZLE_DIAMETER is required for safe print submission"
+            )
+        status = self._mqtt.status()
+        detail = status.get("print")
+        nozzle = detail.get("nozzle_diameter") if isinstance(detail, dict) else None
+        try:
+            nozzle_diameter = float(nozzle) if isinstance(nozzle, (int, float, str)) else None
+        except ValueError as error:
+            raise ValueError(
+                "printer reported an invalid nozzle diameter; refusing to print"
+            ) from error
+        if nozzle_diameter is None:
+            raise ValueError("printer did not report its nozzle diameter; refusing to print")
+        validate_slice_for_printer(
+            metadata,
+            configured_printer_model=self.config.printer_model,
+            configured_nozzle_diameter=self.config.nozzle_diameter,
+            printer_serial=self.config.serial,
+            reported_nozzle_diameter=nozzle_diameter,
+        )
 
 
 def print_control_command(sequence: str, command: str) -> JsonObject:

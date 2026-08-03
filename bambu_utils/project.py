@@ -1,11 +1,63 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import zipfile
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
+from xml.etree import ElementTree
 
 _PLATE_GCODE = re.compile(r"^Metadata/plate_(\d+)\.gcode$")
+_GCODE_SETTING = re.compile(
+    r"^; (?P<key>printer_model|nozzle_diameter)\s*=\s*(?P<value>.+?)\s*$"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SliceMetadata:
+    printer_model: str
+    printer_model_id: str | None
+    nozzle_diameters: tuple[float, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PrinterTarget:
+    setting: str
+    name: str
+    model_id: str
+    serial_prefixes: tuple[str, ...]
+
+
+_TARGETS = (
+    PrinterTarget("X1C", "Bambu Lab X1 Carbon", "BL-P001", ("00M",)),
+    PrinterTarget("X1E", "Bambu Lab X1E", "C13", ("03W",)),
+    PrinterTarget("P1S", "Bambu Lab P1S", "C12", ("01P",)),
+    PrinterTarget("P1P", "Bambu Lab P1P", "C11", ("01S",)),
+    PrinterTarget("A1 Mini", "Bambu Lab A1 mini", "N1", ("030",)),
+    PrinterTarget("A1", "Bambu Lab A1", "N2S", ("039",)),
+)
+_TARGET_ALIASES = {
+    "x1c": _TARGETS[0],
+    "x1 carbon": _TARGETS[0],
+    "bambu lab x1 carbon": _TARGETS[0],
+    "x1e": _TARGETS[1],
+    "bambu lab x1e": _TARGETS[1],
+    "p1s": _TARGETS[2],
+    "bambu lab p1s": _TARGETS[2],
+    "p1p": _TARGETS[3],
+    "bambu lab p1p": _TARGETS[3],
+    "a1 mini": _TARGETS[4],
+    "a1mini": _TARGETS[4],
+    "bambu lab a1 mini": _TARGETS[4],
+    "a1": _TARGETS[5],
+    "bambu lab a1": _TARGETS[5],
+}
+_SERIAL_TARGETS = {
+    prefix: target for target in _TARGETS for prefix in target.serial_prefixes
+}
 
 
 def file_md5(path: Path) -> str:
@@ -34,3 +86,171 @@ def sliced_3mf_plates(path: Path) -> dict[int, str]:
             f"{path} is not sliced: no Metadata/plate_N.gcode entry was found"
         )
     return plates
+
+
+def sliced_3mf_metadata(path: Path, plate_path: str) -> SliceMetadata:
+    """Read and cross-check compatibility metadata from a sliced 3MF."""
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            project_settings = _json_object(
+                archive.read("Metadata/project_settings.config"),
+                "Metadata/project_settings.config",
+            )
+            slice_info = ElementTree.fromstring(
+                archive.read("Metadata/slice_info.config")
+            )
+            gcode = archive.read(plate_path)
+    except KeyError as error:
+        missing = str(error).strip("'")
+        raise ValueError(
+            f"{path} lacks required compatibility metadata {missing}; refusing to print"
+        ) from error
+    except (ElementTree.ParseError, json.JSONDecodeError) as error:
+        raise ValueError(
+            f"{path} has invalid compatibility metadata; refusing to print"
+        ) from error
+
+    project_model = _required_string(
+        project_settings.get("printer_model"), "printer_model", path
+    )
+    project_nozzles = _nozzle_values(
+        project_settings.get("nozzle_diameter"), "project settings", path
+    )
+
+    slice_values = {
+        element.get("key"): element.get("value")
+        for element in slice_info.iter("metadata")
+    }
+    model_id = _required_string(
+        slice_values.get("printer_model_id"), "printer_model_id", path
+    )
+    slice_nozzles = _nozzle_values(
+        slice_values.get("nozzle_diameters"), "slice info", path
+    )
+
+    gcode_values = _gcode_settings(gcode)
+    gcode_model = _required_string(
+        gcode_values.get("printer_model"), "G-code printer_model", path
+    )
+    gcode_nozzles = _nozzle_values(
+        gcode_values.get("nozzle_diameter"), "G-code", path
+    )
+
+    if project_model != gcode_model:
+        raise ValueError(
+            f"{path} has conflicting printer metadata ({project_model!r} vs "
+            f"{gcode_model!r}); refusing to print"
+        )
+    if project_nozzles != slice_nozzles or project_nozzles != gcode_nozzles:
+        raise ValueError(
+            f"{path} has conflicting nozzle metadata; refusing to print"
+        )
+    return SliceMetadata(project_model, model_id, project_nozzles)
+
+
+def gcode_metadata(path: Path) -> SliceMetadata:
+    """Read compatibility metadata from a standalone slicer G-code file."""
+
+    values = _gcode_settings(path.read_bytes())
+    model = _required_string(values.get("printer_model"), "printer_model", path)
+    nozzles = _nozzle_values(values.get("nozzle_diameter"), "G-code", path)
+    return SliceMetadata(model, None, nozzles)
+
+
+def validate_slice_for_printer(
+    metadata: SliceMetadata,
+    *,
+    configured_printer_model: str,
+    configured_nozzle_diameter: float,
+    printer_serial: str,
+    reported_nozzle_diameter: float,
+) -> None:
+    """Fail closed unless a slice matches the connected printer and nozzle."""
+
+    target = _TARGET_ALIASES.get(configured_printer_model.strip().lower())
+    supported = ", ".join(item.setting for item in _TARGETS)
+    if target is None:
+        raise ValueError(
+            f"configured printer model {configured_printer_model!r} is unsupported; "
+            f"choose one of {supported}"
+        )
+    prefix = printer_serial[:3].upper()
+    serial_target = _SERIAL_TARGETS.get(prefix)
+    if serial_target is None:
+        raise ValueError(
+            f"printer serial family {prefix!r} is unsupported; refusing to print"
+        )
+    if serial_target != target:
+        raise ValueError(
+            f"BAMBU_PRINTER_MODEL={target.setting!r} conflicts with serial family "
+            f"{prefix!r} ({serial_target.setting}); refusing to print"
+        )
+    if metadata.printer_model != target.name:
+        raise ValueError(
+            f"slice targets {metadata.printer_model}, but connected printer is "
+            f"{target.name}; refusing to upload or print"
+        )
+    if metadata.printer_model_id not in {None, target.model_id}:
+        raise ValueError(
+            f"slice model ID {metadata.printer_model_id} does not match connected "
+            f"printer model ID {target.model_id}; refusing to upload or print"
+        )
+    if len(metadata.nozzle_diameters) != 1:
+        raise ValueError("multi-nozzle slices are not supported; refusing to print")
+    if abs(configured_nozzle_diameter - reported_nozzle_diameter) > 0.001:
+        raise ValueError(
+            f"BAMBU_NOZZLE_DIAMETER={configured_nozzle_diameter:g} conflicts with "
+            f"the printer-reported {reported_nozzle_diameter:g} mm nozzle; refusing "
+            "to print"
+        )
+    sliced_nozzle = metadata.nozzle_diameters[0]
+    if abs(sliced_nozzle - configured_nozzle_diameter) > 0.001:
+        raise ValueError(
+            f"slice targets a {sliced_nozzle:g} mm nozzle, but "
+            f"BAMBU_NOZZLE_DIAMETER is {configured_nozzle_diameter:g} mm; refusing "
+            "to upload or print"
+        )
+
+
+def _json_object(data: bytes, source: str) -> dict[str, object]:
+    value: object = json.loads(data)
+    if not isinstance(value, dict):
+        raise ValueError(f"{source} must contain a JSON object")
+    return cast(dict[str, object], value)
+
+
+def _required_string(value: object, field: str, path: Path) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{path} has no {field}; refusing to print")
+    return value.strip()
+
+
+def _nozzle_values(value: object, source: str, path: Path) -> tuple[float, ...]:
+    raw_values: Sequence[object]
+    if isinstance(value, list):
+        raw_values = cast(list[object], value)
+    elif isinstance(value, str):
+        raw_values = value.split(",")
+    else:
+        raise ValueError(f"{path} has no nozzle diameter in {source}; refusing to print")
+
+    try:
+        nozzles = tuple(float(str(item).strip()) for item in raw_values)
+    except ValueError as error:
+        raise ValueError(
+            f"{path} has an invalid nozzle diameter in {source}; refusing to print"
+        ) from error
+    if not nozzles:
+        raise ValueError(f"{path} has no nozzle diameter in {source}; refusing to print")
+    return nozzles
+
+
+def _gcode_settings(gcode: bytes) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw_line in gcode.splitlines():
+        line = raw_line.decode("utf-8", errors="replace")
+        match = _GCODE_SETTING.fullmatch(line)
+        if match:
+            values[match.group("key")] = match.group("value")
+    return values
