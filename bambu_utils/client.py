@@ -65,6 +65,7 @@ class BambuPrinter:
                 )
             payload = project_file_command(
                 sequence=self._mqtt.next_sequence(),
+                serial=self.config.serial,
                 local_path=local,
                 remote_path=remote,
                 plate_path=plates[selected.plate],
@@ -125,6 +126,7 @@ def gcode_file_command(sequence: str, remote_path: str) -> JsonObject:
 def project_file_command(
     *,
     sequence: str,
+    serial: str,
     local_path: Path,
     remote_path: str,
     plate_path: str,
@@ -145,7 +147,7 @@ def project_file_command(
             "subtask_id": "0",
             "subtask_name": subtask_name,
             "file": remote,
-            "url": f"ftp:///{remote}",
+            "url": _project_file_url(remote, serial),
             "md5": file_md5(local_path),
             "bed_type": "auto",
             "bed_leveling": options.bed_leveling,
@@ -158,6 +160,14 @@ def project_file_command(
             "ams_mapping2": ams_mapping2,
         }
     })
+
+
+def _project_file_url(remote_path: str, serial: str) -> str:
+    # A1/A1 Mini and P1 firmware address FTPS-uploaded files through the
+    # mounted SD-card path when dispatching a project_file command.
+    if serial[:3].upper() in {"01P", "01S", "030", "039"}:
+        return f"file:///sdcard/{remote_path}"
+    return f"ftp:///{remote_path}"
 
 
 def _ams_mapping(

@@ -38,6 +38,7 @@ def test_project_file_command_for_external_spool(tmp_path: Path) -> None:
 
     payload = project_file_command(
         sequence="3",
+        serial="00M000000000000",
         local_path=project,
         remote_path="cache/test.gcode.3mf",
         plate_path="Metadata/plate_1.gcode",
@@ -74,6 +75,7 @@ def test_project_file_command_maps_absolute_ams_trays(tmp_path: Path) -> None:
 
     payload = project_file_command(
         sequence="4",
+        serial="00M000000000000",
         local_path=project,
         remote_path="cache/multi.3mf",
         plate_path="Metadata/plate_2.gcode",
@@ -90,3 +92,21 @@ def test_project_file_command_maps_absolute_ams_trays(tmp_path: Path) -> None:
         {"ams_id": 255, "slot_id": 255},
         {"ams_id": 128, "slot_id": 0},
     ]
+
+
+def test_project_file_command_uses_sdcard_url_for_a1(tmp_path: Path) -> None:
+    project = tmp_path / "a1.gcode.3mf"
+    project.write_bytes(b"data")
+
+    payload = project_file_command(
+        sequence="5",
+        serial="03900A000000000",
+        local_path=project,
+        remote_path="cache/a1.gcode.3mf",
+        plate_path="Metadata/plate_1.gcode",
+        options=PrintOptions(),
+    )
+    detail = payload["print"]
+
+    assert isinstance(detail, dict)
+    assert detail["url"] == "file:///sdcard/cache/a1.gcode.3mf"
