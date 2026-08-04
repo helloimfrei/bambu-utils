@@ -22,10 +22,13 @@ def _write_sliced_3mf(
     slice_nozzle: str = "0.4",
     gcode_model: str | None = None,
     gcode_nozzle: str = "0.4",
+    project_nozzle_type: str = "stainless_steel",
+    gcode_nozzle_type: str = "stainless_steel",
 ) -> None:
     project_settings = {
         "printer_model": model,
         "nozzle_diameter": [project_nozzle],
+        "nozzle_type": [project_nozzle_type],
     }
     slice_info = (
         '<config><plate><metadata key="printer_model_id" '
@@ -35,6 +38,7 @@ def _write_sliced_3mf(
     gcode = (
         f"; printer_model = {gcode_model or model}\n"
         f"; nozzle_diameter = {gcode_nozzle}\n"
+        f"; nozzle_type = {gcode_nozzle_type}\n"
         "G28\n"
     )
     with zipfile.ZipFile(path, "w") as archive:
@@ -72,6 +76,7 @@ def test_sliced_3mf_metadata_cross_checks_three_sources(tmp_path: Path) -> None:
         printer_model="Bambu Lab A1",
         printer_model_id="N2S",
         nozzle_diameters=(0.4,),
+        nozzle_types=("stainless_steel",),
     )
 
 
@@ -97,41 +102,54 @@ def test_sliced_3mf_metadata_rejects_missing_compatibility_data(
 
 
 def test_validate_slice_rejects_p1s_gcode_for_a1() -> None:
-    metadata = SliceMetadata("Bambu Lab P1S", "C12", (0.4,))
+    metadata = SliceMetadata("Bambu Lab P1S", "C12", (0.4,), ("stainless_steel",))
 
     with pytest.raises(ValueError, match="slice targets Bambu Lab P1S"):
         validate_slice_for_printer(
             metadata,
             configured_printer_model="A1",
-            configured_nozzle_diameter=0.4,
             printer_serial="03900A000000000",
             reported_nozzle_diameter=0.4,
+            reported_nozzle_type="stainless_steel",
         )
 
 
 def test_validate_slice_rejects_config_that_conflicts_with_serial() -> None:
-    metadata = SliceMetadata("Bambu Lab P1S", "C12", (0.4,))
+    metadata = SliceMetadata("Bambu Lab P1S", "C12", (0.4,), ("stainless_steel",))
 
     with pytest.raises(ValueError, match="conflicts with serial family"):
         validate_slice_for_printer(
             metadata,
             configured_printer_model="P1S",
-            configured_nozzle_diameter=0.4,
             printer_serial="03900A000000000",
             reported_nozzle_diameter=0.4,
+            reported_nozzle_type="stainless_steel",
         )
 
 
 def test_validate_slice_rejects_nozzle_mismatch() -> None:
-    metadata = SliceMetadata("Bambu Lab A1", "N2S", (0.6,))
+    metadata = SliceMetadata("Bambu Lab A1", "N2S", (0.6,), ("stainless_steel",))
 
     with pytest.raises(ValueError, match="slice targets a 0.6 mm nozzle"):
         validate_slice_for_printer(
             metadata,
             configured_printer_model="A1",
-            configured_nozzle_diameter=0.4,
             printer_serial="03900A000000000",
             reported_nozzle_diameter=0.4,
+            reported_nozzle_type="stainless_steel",
+        )
+
+
+def test_validate_slice_rejects_nozzle_type_mismatch() -> None:
+    metadata = SliceMetadata("Bambu Lab A1", "N2S", (0.4,), ("hardened_steel",))
+
+    with pytest.raises(ValueError, match="slice targets nozzle type 'hardened_steel'"):
+        validate_slice_for_printer(
+            metadata,
+            configured_printer_model="A1",
+            printer_serial="03900A000000000",
+            reported_nozzle_diameter=0.4,
+            reported_nozzle_type="stainless_steel",
         )
 
 
@@ -150,11 +168,11 @@ def test_validate_slice_supports_registered_printer_families(
     setting: str, model: str, model_id: str, serial: str
 ) -> None:
     validate_slice_for_printer(
-        SliceMetadata(model, model_id, (0.4,)),
+        SliceMetadata(model, model_id, (0.4,), ("stainless_steel",)),
         configured_printer_model=setting,
-        configured_nozzle_diameter=0.4,
         printer_serial=serial,
         reported_nozzle_diameter=0.4,
+        reported_nozzle_type="stainless_steel",
     )
 
 

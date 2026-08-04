@@ -28,11 +28,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--serial", default=default("BAMBU_SERIAL"))
     parser.add_argument("--access-code", default=default("BAMBU_ACCESS_CODE"))
     parser.add_argument("--printer-model", default=default("BAMBU_PRINTER_MODEL"))
-    parser.add_argument(
-        "--nozzle-diameter",
-        type=float,
-        default=default("BAMBU_NOZZLE_DIAMETER"),
-    )
     parser.add_argument("--timeout", type=float, default=default("BAMBU_TIMEOUT", "15"))
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -102,7 +97,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 parser, "--access-code", "BAMBU_ACCESS_CODE", args.access_code
             ),
             printer_model=args.printer_model,
-            nozzle_diameter=args.nozzle_diameter,
             timeout=args.timeout,
         )
         printer = BambuPrinter(config)

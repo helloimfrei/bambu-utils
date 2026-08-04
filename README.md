@@ -46,7 +46,6 @@ BAMBU_HOST=192.168.1.50
 BAMBU_SERIAL=01P00A000000000
 BAMBU_ACCESS_CODE=12345678
 BAMBU_PRINTER_MODEL=P1S
-BAMBU_NOZZLE_DIAMETER=0.4
 BAMBU_TIMEOUT=15
 ```
 
@@ -82,9 +81,9 @@ print request.
 
 Before uploading a print, the command fails closed unless all of these agree:
 
-- configured model and nozzle in `.env`;
+- configured model in `.env`;
 - model inferred from the connected printer serial;
-- nozzle diameter reported live by the printer;
+- nozzle diameter and construction type reported live by the printer;
 - model name, model ID, and nozzle metadata embedded independently in the 3MF
   project, slice information, and selected plate G-code.
 

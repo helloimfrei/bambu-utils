@@ -17,7 +17,11 @@ def test_incompatible_slice_is_rejected_before_upload(tmp_path: Path) -> None:
         archive.writestr(
             "Metadata/project_settings.config",
             json.dumps(
-                {"printer_model": "Bambu Lab P1S", "nozzle_diameter": ["0.4"]}
+                {
+                    "printer_model": "Bambu Lab P1S",
+                    "nozzle_diameter": ["0.4"],
+                    "nozzle_type": ["stainless_steel"],
+                }
             ),
         )
         archive.writestr(
@@ -27,7 +31,9 @@ def test_incompatible_slice_is_rejected_before_upload(tmp_path: Path) -> None:
         )
         archive.writestr(
             "Metadata/plate_1.gcode",
-            "; printer_model = Bambu Lab P1S\n; nozzle_diameter = 0.4\nG28\n",
+            "; printer_model = Bambu Lab P1S\n"
+            "; nozzle_diameter = 0.4\n"
+            "; nozzle_type = stainless_steel\nG28\n",
         )
 
     printer = BambuPrinter(
@@ -36,10 +42,11 @@ def test_incompatible_slice_is_rejected_before_upload(tmp_path: Path) -> None:
             access_code="code",
             serial="03900A000000000",
             printer_model="A1",
-            nozzle_diameter=0.4,
         )
     )
-    status = {"print": {"nozzle_diameter": "0.4"}}
+    status = {
+        "print": {"nozzle_diameter": "0.4", "nozzle_type": "stainless_steel"}
+    }
     with (
         patch.object(MqttClient, "status", return_value=status),
         patch.object(FileTransferClient, "upload") as upload,

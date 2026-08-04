@@ -116,13 +116,10 @@ class BambuPrinter:
             raise ValueError(
                 "BAMBU_PRINTER_MODEL is required for safe print submission"
             )
-        if self.config.nozzle_diameter is None:
-            raise ValueError(
-                "BAMBU_NOZZLE_DIAMETER is required for safe print submission"
-            )
         status = self._mqtt.status()
         detail = status.get("print")
         nozzle = detail.get("nozzle_diameter") if isinstance(detail, dict) else None
+        nozzle_type = detail.get("nozzle_type") if isinstance(detail, dict) else None
         try:
             nozzle_diameter = float(nozzle) if isinstance(nozzle, (int, float, str)) else None
         except ValueError as error:
@@ -131,12 +128,14 @@ class BambuPrinter:
             ) from error
         if nozzle_diameter is None:
             raise ValueError("printer did not report its nozzle diameter; refusing to print")
+        if not isinstance(nozzle_type, str) or not nozzle_type.strip():
+            raise ValueError("printer did not report its nozzle type; refusing to print")
         validate_slice_for_printer(
             metadata,
             configured_printer_model=self.config.printer_model,
-            configured_nozzle_diameter=self.config.nozzle_diameter,
             printer_serial=self.config.serial,
             reported_nozzle_diameter=nozzle_diameter,
+            reported_nozzle_type=nozzle_type,
         )
 
 

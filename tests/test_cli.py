@@ -15,7 +15,6 @@ def test_dotenv_supplies_connection_defaults(
         "BAMBU_SERIAL=file-serial\n"
         "BAMBU_ACCESS_CODE=file-code\n"
         "BAMBU_PRINTER_MODEL=A1\n"
-        "BAMBU_NOZZLE_DIAMETER=0.4\n"
         "BAMBU_TIMEOUT=20\n"
     )
     monkeypatch.chdir(tmp_path)
@@ -27,7 +26,6 @@ def test_dotenv_supplies_connection_defaults(
     assert args.serial == "file-serial"
     assert args.access_code == "file-code"
     assert args.printer_model == "A1"
-    assert args.nozzle_diameter == 0.4
     assert args.timeout == 20.0
 
 

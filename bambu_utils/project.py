@@ -12,7 +12,7 @@ from xml.etree import ElementTree
 
 _PLATE_GCODE = re.compile(r"^Metadata/plate_(\d+)\.gcode$")
 _GCODE_SETTING = re.compile(
-    r"^; (?P<key>printer_model|nozzle_diameter)\s*=\s*(?P<value>.+?)\s*$"
+    r"^; (?P<key>printer_model|nozzle_diameter|nozzle_type)\s*=\s*(?P<value>.+?)\s*$"
 )
 
 
@@ -21,6 +21,7 @@ class SliceMetadata:
     printer_model: str
     printer_model_id: str | None
     nozzle_diameters: tuple[float, ...]
+    nozzle_types: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +118,9 @@ def sliced_3mf_metadata(path: Path, plate_path: str) -> SliceMetadata:
     project_nozzles = _nozzle_values(
         project_settings.get("nozzle_diameter"), "project settings", path
     )
+    project_nozzle_types = _string_values(
+        project_settings.get("nozzle_type"), "nozzle type in project settings", path
+    )
 
     slice_values = {
         element.get("key"): element.get("value")
@@ -136,6 +140,9 @@ def sliced_3mf_metadata(path: Path, plate_path: str) -> SliceMetadata:
     gcode_nozzles = _nozzle_values(
         gcode_values.get("nozzle_diameter"), "G-code", path
     )
+    gcode_nozzle_types = _string_values(
+        gcode_values.get("nozzle_type"), "G-code nozzle type", path
+    )
 
     if project_model != gcode_model:
         raise ValueError(
@@ -146,7 +153,13 @@ def sliced_3mf_metadata(path: Path, plate_path: str) -> SliceMetadata:
         raise ValueError(
             f"{path} has conflicting nozzle metadata; refusing to print"
         )
-    return SliceMetadata(project_model, model_id, project_nozzles)
+    if project_nozzle_types != gcode_nozzle_types:
+        raise ValueError(
+            f"{path} has conflicting nozzle type metadata; refusing to print"
+        )
+    return SliceMetadata(
+        project_model, model_id, project_nozzles, project_nozzle_types
+    )
 
 
 def gcode_metadata(path: Path) -> SliceMetadata:
@@ -155,16 +168,19 @@ def gcode_metadata(path: Path) -> SliceMetadata:
     values = _gcode_settings(path.read_bytes())
     model = _required_string(values.get("printer_model"), "printer_model", path)
     nozzles = _nozzle_values(values.get("nozzle_diameter"), "G-code", path)
-    return SliceMetadata(model, None, nozzles)
+    nozzle_types = _string_values(
+        values.get("nozzle_type"), "G-code nozzle type", path
+    )
+    return SliceMetadata(model, None, nozzles, nozzle_types)
 
 
 def validate_slice_for_printer(
     metadata: SliceMetadata,
     *,
     configured_printer_model: str,
-    configured_nozzle_diameter: float,
     printer_serial: str,
     reported_nozzle_diameter: float,
+    reported_nozzle_type: str,
 ) -> None:
     """Fail closed unless a slice matches the connected printer and nozzle."""
 
@@ -198,18 +214,22 @@ def validate_slice_for_printer(
         )
     if len(metadata.nozzle_diameters) != 1:
         raise ValueError("multi-nozzle slices are not supported; refusing to print")
-    if abs(configured_nozzle_diameter - reported_nozzle_diameter) > 0.001:
-        raise ValueError(
-            f"BAMBU_NOZZLE_DIAMETER={configured_nozzle_diameter:g} conflicts with "
-            f"the printer-reported {reported_nozzle_diameter:g} mm nozzle; refusing "
-            "to print"
-        )
     sliced_nozzle = metadata.nozzle_diameters[0]
-    if abs(sliced_nozzle - configured_nozzle_diameter) > 0.001:
+    if abs(sliced_nozzle - reported_nozzle_diameter) > 0.001:
         raise ValueError(
-            f"slice targets a {sliced_nozzle:g} mm nozzle, but "
-            f"BAMBU_NOZZLE_DIAMETER is {configured_nozzle_diameter:g} mm; refusing "
-            "to upload or print"
+            f"slice targets a {sliced_nozzle:g} mm nozzle, but connected printer "
+            f"reports {reported_nozzle_diameter:g} mm; refusing to upload or print"
+        )
+    if len(metadata.nozzle_types) != 1:
+        raise ValueError(
+            "multi-nozzle type metadata is not supported; refusing to print"
+        )
+    sliced_nozzle_type = metadata.nozzle_types[0]
+    live_nozzle_type = reported_nozzle_type.strip().lower()
+    if sliced_nozzle_type != live_nozzle_type:
+        raise ValueError(
+            f"slice targets nozzle type {sliced_nozzle_type!r}, but connected printer "
+            f"reports {live_nozzle_type!r}; refusing to upload or print"
         )
 
 
@@ -244,6 +264,21 @@ def _nozzle_values(value: object, source: str, path: Path) -> tuple[float, ...]:
     if not nozzles:
         raise ValueError(f"{path} has no nozzle diameter in {source}; refusing to print")
     return nozzles
+
+
+def _string_values(value: object, source: str, path: Path) -> tuple[str, ...]:
+    raw_values: Sequence[object]
+    if isinstance(value, list):
+        raw_values = cast(list[object], value)
+    elif isinstance(value, str):
+        raw_values = value.split(",")
+    else:
+        raise ValueError(f"{path} has no {source}; refusing to print")
+
+    values = tuple(str(item).strip().lower() for item in raw_values)
+    if not values or any(not item for item in values):
+        raise ValueError(f"{path} has no {source}; refusing to print")
+    return values
 
 
 def _gcode_settings(gcode: bytes) -> dict[str, str]:
