@@ -5,6 +5,7 @@ plugin or cloud service. The CLI talks to the printer itself:
 
 - implicit FTPS for upload, download, list, and delete;
 - TLS MQTT for status, print start, pause, resume, and stop;
+- a FastAPI/React dashboard with live telemetry, run history, and local camera;
 - validation that a `.3mf` actually contains sliced plate G-code before starting it.
 
 This is an independent client for Bambu's unsupported Developer Mode protocol,
@@ -57,6 +58,32 @@ other checkouts.
 `BAMBU_PRINTER_MODEL` accepts `X1C`, `X1E`, `P1S`, `P1P`, `A1 Mini`, or
 `A1`. Newer printer families are intentionally rejected until their different
 print payloads are implemented and hardware-validated.
+
+## Monitoring dashboard
+
+Run the production dashboard from the repository root:
+
+```sh
+uv run bambu-dashboard
+```
+
+Open `http://127.0.0.1:8000`. The backend keeps one MQTT connection open and
+streams normalized status updates to the React UI. It includes:
+
+- live job state, progress, ETA, layers, temperatures, fans, and diagnostics;
+- AMS tray material, color, active slot, and remaining estimate;
+- pause, resume, and stop controls;
+- an on-demand A1/P1 camera feed proxied as MJPEG; and
+- local run history in `~/.local/share/bambu-utils/runs.sqlite3`.
+
+The camera connection is shared across viewers and released when the last
+viewer closes or clicks **Release camera**. Camera frames are forwarded without
+video transcoding. X1/P2/H2 RTSPS cameras are not implemented yet.
+
+The dashboard binds to loopback by default so the printer access code never
+needs to reach a browser. Set `BAMBU_UI_HOST=0.0.0.0` only if you intentionally
+want plain HTTP access from the local network. Tailscale Serve is the preferred
+remote entry point.
 
 ## Send a sliced file
 
@@ -138,16 +165,69 @@ Global settings can also be passed before the subcommand, for example
 `bambu-utils --host 192.168.1.50 ... status`, but environment variables avoid
 putting the access code in shell history.
 
-## Tailscale
+## Raspberry Pi Zero 2 W and Tailscale
+
+A 64-bit Raspberry Pi OS Lite install is sufficient. The production React
+bundle is committed and served by FastAPI, so Node.js is not required on the
+Pi. Runtime work is limited to MQTT, SQLite writes at print transitions, and
+JPEG forwarding; the service does not transcode video. The included systemd
+unit caps the dashboard at 256 MB RAM.
+
+Create a dedicated service user and install the repository:
+
+```sh
+sudo useradd --system --create-home --home-dir /home/bambu \
+  --shell /usr/sbin/nologin bambu
+sudo install -d -o bambu -g bambu /opt/bambu-utils
+sudo -u bambu git clone https://github.com/helloimfrei/bambu-utils.git \
+  /opt/bambu-utils
+sudo -u bambu sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+sudo -u bambu /home/bambu/.local/bin/uv sync \
+  --directory /opt/bambu-utils --no-dev
+sudo install -o root -g bambu -m 640 /opt/bambu-utils/.env.example \
+  /opt/bambu-utils/.env
+sudoedit /opt/bambu-utils/.env
+sudo cp /opt/bambu-utils/deploy/bambu-dashboard.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now bambu-dashboard
+```
+
+Keep `BAMBU_UI_HOST=127.0.0.1`, then publish the UI privately with HTTPS:
+
+```sh
+sudo tailscale serve --bg http://127.0.0.1:8000
+tailscale serve status
+```
+
+Do not use Tailscale Funnel: that would make the dashboard public. Tailscale
+Serve keeps it inside the tailnet and resumes after reboot.
+
+The Pi can independently advertise the printer LAN as a subnet router. Enable
+IPv4 forwarding, replacing `<LAN_CIDR>` with the actual subnet:
+
+```sh
+printf 'net.ipv4.ip_forward = 1\n' | \
+  sudo tee /etc/sysctl.d/99-tailscale.conf
+sudo sysctl --system
+sudo tailscale set --advertise-routes=<LAN_CIDR>
+```
+
+Approve the route in the Tailscale admin console and restrict it with tailnet
+grants. The dashboard itself does not require the advertised route because the
+Pi talks to the printer locally; it is useful when another tailnet device needs
+direct printer access.
+
+### Network details
 
 The printer cannot run Tailscale itself. Put a Tailscale node on the printer's
 LAN and configure it as a
-[subnet router](https://tailscale.com/kb/1019/subnets), then continue using the
+[subnet router](https://tailscale.com/docs/features/subnet-routers), then continue using the
 printer's LAN IP as `BAMBU_HOST`. No multicast discovery is needed because this
 CLI always uses an explicit address.
 
-MQTT uses TCP 8883. FTPS uses TCP 990 for its control connection plus a
-printer-selected passive TCP data port for every list or transfer. Bambu does
+MQTT uses TCP 8883 and the A1/P1 camera uses TCP 6000. FTPS uses TCP 990 for
+its control connection plus a printer-selected passive TCP data port for every
+list or transfer. Bambu does
 not publish a stable passive-port range, so a restrictive tailnet policy must
 allow the initiating user/device TCP access to the printer IP, not just ports
 8883 and 990. Scope that rule to this one destination and trusted principals;
@@ -166,5 +246,15 @@ control and protection of the access code remain the trust boundary.
 uv sync --dev
 uv run pytest
 uv run pyright
+npm --prefix web ci
+npm --prefix web run check
+npm --prefix web run build
 uv build --no-sources
+```
+
+Vite development mode proxies `/api` to a dashboard running on port 8000:
+
+```sh
+uv run bambu-dashboard
+npm --prefix web run dev
 ```
