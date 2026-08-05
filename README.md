@@ -94,12 +94,20 @@ file manually from the printer screen also bypasses this utility's validation.
 Select another plate or map project filaments to AMS trays:
 
 ```sh
+./scripts/send-slice --print multi-color.gcode.3mf --plate 2 --ams auto
 ./scripts/send-slice --print multi-color.gcode.3mf --plate 2 --ams 0,1,4
 ```
 
+`--ams auto` reads the selected plate's filament type, profile ID, and color,
+then compares them with live AMS telemetry. Every used filament must have one
+exact match; a missing or ambiguous match aborts before upload. The confirmed
+output includes the resolved tray mapping. This intentionally does not choose a
+"close enough" color or substitute another material.
+
 AMS tray IDs are absolute: `0..3` are slots in the first AMS, `4..7` in the
 second, and `-1` means unmapped. The order must match the filament order in the
-sliced project.
+sliced project. Explicit IDs remain available when you intentionally want a
+different color than the one saved by the slicer.
 
 Bed leveling, flow calibration, vibration calibration, and layer inspection
 default on to match the common local-print payload. Each can be disabled:

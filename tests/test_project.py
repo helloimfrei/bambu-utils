@@ -5,8 +5,10 @@ from pathlib import Path
 import pytest
 
 from bambu_utils.project import (
+    SliceFilament,
     SliceMetadata,
     gcode_metadata,
+    sliced_3mf_filaments,
     sliced_3mf_metadata,
     sliced_3mf_plates,
     validate_slice_for_printer,
@@ -99,6 +101,33 @@ def test_sliced_3mf_metadata_rejects_missing_compatibility_data(
 
     with pytest.raises(ValueError, match="lacks required compatibility metadata"):
         sliced_3mf_metadata(project, "Metadata/plate_1.gcode")
+
+
+def test_sliced_3mf_filaments_reads_only_the_selected_plate(tmp_path: Path) -> None:
+    project = tmp_path / "multi.gcode.3mf"
+    slice_info = (
+        '<config><plate><metadata key="index" value="1"/>'
+        '<filament id="1" tray_info_idx="GFA00" type="PLA" color="#FFFFFF" '
+        'used_for_object="true" used_for_support="false"/></plate>'
+        '<plate><metadata key="index" value="2"/>'
+        '<filament id="2" tray_info_idx="GFA01" type="PETG" color="#000000FF" '
+        'used_for_object="true" used_for_support="false"/>'
+        '<filament id="3" tray_info_idx="GFA00" type="PLA" color="#FF0000" '
+        'used_for_object="false" used_for_support="false"/></plate></config>'
+    )
+    with zipfile.ZipFile(project, "w") as archive:
+        archive.writestr("Metadata/slice_info.config", slice_info)
+
+    assert sliced_3mf_filaments(
+        project, "Metadata/plate_2.gcode"
+    ) == (
+        SliceFilament(
+            id=2,
+            profile_id="GFA01",
+            filament_type="PETG",
+            color="#000000FF",
+        ),
+    )
 
 
 def test_validate_slice_rejects_p1s_gcode_for_a1() -> None:

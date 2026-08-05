@@ -7,6 +7,7 @@ import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Literal
 
 from dotenv import dotenv_values
 
@@ -58,7 +59,7 @@ def _parser() -> argparse.ArgumentParser:
         "--ams",
         type=_ams_slots,
         metavar="SLOTS",
-        help="comma-separated absolute AMS tray IDs, such as 0,1,4",
+        help="'auto' or comma-separated absolute AMS tray IDs, such as 0,1,4",
     )
     send.add_argument(
         "--bed-leveling", action=argparse.BooleanOptionalAction, default=True
@@ -76,7 +77,9 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _ams_slots(value: str) -> tuple[int, ...]:
+def _ams_slots(value: str) -> tuple[int, ...] | Literal["auto"]:
+    if value.strip().lower() == "auto":
+        return "auto"
     try:
         slots = tuple(int(item.strip()) for item in value.split(","))
     except ValueError as error:
@@ -135,8 +138,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                     layer_inspection=args.layer_inspection,
                     timelapse=args.timelapse,
                 )
-                remote = printer.send(args.local, remote_path=args.remote, options=options)
-                print(f"Print confirmed running: {remote} (plate {options.plate})")
+                submission = printer.send(
+                    args.local, remote_path=args.remote, options=options
+                )
+                ams = (
+                    f", AMS slots {','.join(str(slot) for slot in submission.ams_slots)}"
+                    if submission.ams_slots is not None
+                    else ""
+                )
+                print(
+                    f"Print confirmed running: {submission.remote_path} "
+                    f"(plate {options.plate}{ams})"
+                )
             case _:
                 raise AssertionError(f"unhandled command: {args.command}")
         return 0

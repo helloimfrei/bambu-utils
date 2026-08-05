@@ -10,7 +10,7 @@ usage() {
         '' \
         'Examples:' \
         '  ./scripts/send-slice part.gcode.3mf' \
-        '  ./scripts/send-slice --print part.gcode.3mf --plate 2 --ams 0,1'
+        '  ./scripts/send-slice --print part.gcode.3mf --ams auto'
 }
 
 start_print=false

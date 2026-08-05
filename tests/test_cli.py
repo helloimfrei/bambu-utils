@@ -44,3 +44,22 @@ def test_flags_and_shell_environment_override_dotenv(
 
     assert args.host == "flag-host"
     assert args.serial == "flag-serial"
+
+
+def test_ams_auto_is_accepted() -> None:
+    args = _parser().parse_args(
+        [
+            "--host",
+            "printer",
+            "--serial",
+            "serial",
+            "--access-code",
+            "code",
+            "print",
+            "part.gcode.3mf",
+            "--ams",
+            "auto",
+        ]
+    )
+
+    assert args.ams == "auto"

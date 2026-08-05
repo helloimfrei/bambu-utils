@@ -1,7 +1,13 @@
-from bambu_utils.client import BambuPrinter, PrintOptions
+from bambu_utils.client import BambuPrinter, PrintOptions, PrintSubmission
 from bambu_utils.config import PrinterConfig
 
-__all__ = ["BambuPrinter", "PrintOptions", "PrinterConfig", "main"]
+__all__ = [
+    "BambuPrinter",
+    "PrintOptions",
+    "PrintSubmission",
+    "PrinterConfig",
+    "main",
+]
 
 
 def main() -> int:

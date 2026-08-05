@@ -25,6 +25,14 @@ class SliceMetadata:
 
 
 @dataclass(frozen=True, slots=True)
+class SliceFilament:
+    id: int
+    profile_id: str | None
+    filament_type: str
+    color: str
+
+
+@dataclass(frozen=True, slots=True)
 class PrinterTarget:
     setting: str
     name: str
@@ -122,9 +130,10 @@ def sliced_3mf_metadata(path: Path, plate_path: str) -> SliceMetadata:
         project_settings.get("nozzle_type"), "nozzle type in project settings", path
     )
 
+    plate = _slice_plate(slice_info, plate_path, path)
     slice_values = {
         element.get("key"): element.get("value")
-        for element in slice_info.iter("metadata")
+        for element in plate.iter("metadata")
     }
     model_id = _required_string(
         slice_values.get("printer_model_id"), "printer_model_id", path
@@ -160,6 +169,74 @@ def sliced_3mf_metadata(path: Path, plate_path: str) -> SliceMetadata:
     return SliceMetadata(
         project_model, model_id, project_nozzles, project_nozzle_types
     )
+
+
+def sliced_3mf_filaments(path: Path, plate_path: str) -> tuple[SliceFilament, ...]:
+    """Read the filaments used by one sliced plate."""
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            slice_info = ElementTree.fromstring(
+                archive.read("Metadata/slice_info.config")
+            )
+    except KeyError as error:
+        raise ValueError(
+            f"{path} lacks Metadata/slice_info.config; cannot map AMS filaments"
+        ) from error
+    except ElementTree.ParseError as error:
+        raise ValueError(
+            f"{path} has invalid slice metadata; cannot map AMS filaments"
+        ) from error
+
+    plate = _slice_plate(slice_info, plate_path, path)
+    filaments: list[SliceFilament] = []
+    seen_ids: set[int] = set()
+    for element in plate.iter("filament"):
+        used_for_object = element.get("used_for_object")
+        used_for_support = element.get("used_for_support")
+        if used_for_object == "false" and used_for_support == "false":
+            continue
+
+        raw_id = element.get("id")
+        try:
+            filament_id = int(raw_id) if raw_id is not None else 0
+        except ValueError as error:
+            raise ValueError(
+                f"{path} has an invalid filament ID; cannot map AMS filaments"
+            ) from error
+        if filament_id < 1 or filament_id in seen_ids:
+            raise ValueError(
+                f"{path} has invalid or duplicate filament ID {filament_id}; "
+                "cannot map AMS filaments"
+            )
+
+        filament_type = element.get("type")
+        color = element.get("color")
+        if (
+            not filament_type
+            or not filament_type.strip()
+            or not color
+            or not color.strip()
+        ):
+            raise ValueError(
+                f"{path} lacks type or color metadata for filament {filament_id}; "
+                "cannot map AMS filaments"
+            )
+        raw_profile = element.get("tray_info_idx")
+        profile = raw_profile.strip() if raw_profile and raw_profile.strip() else None
+        seen_ids.add(filament_id)
+        filaments.append(
+            SliceFilament(
+                id=filament_id,
+                profile_id=profile,
+                filament_type=filament_type.strip(),
+                color=color.strip(),
+            )
+        )
+
+    if not filaments:
+        raise ValueError(f"{path} has no used filament metadata; cannot map AMS")
+    return tuple(sorted(filaments, key=lambda filament: filament.id))
 
 
 def gcode_metadata(path: Path) -> SliceMetadata:
@@ -289,3 +366,26 @@ def _gcode_settings(gcode: bytes) -> dict[str, str]:
         if match:
             values[match.group("key")] = match.group("value")
     return values
+
+
+def _slice_plate(
+    slice_info: ElementTree.Element, plate_path: str, path: Path
+) -> ElementTree.Element:
+    match = _PLATE_GCODE.fullmatch(plate_path)
+    if match is None:
+        raise ValueError(f"invalid sliced plate path {plate_path!r}")
+    plate_number = int(match.group(1))
+    plates = list(slice_info.iter("plate"))
+    for plate in plates:
+        for metadata in plate.iter("metadata"):
+            if metadata.get("key") == "index" and metadata.get("value") == str(
+                plate_number
+            ):
+                return plate
+    if len(plates) == 1 and plate_number == 1:
+        return plates[0]
+    if not plates and plate_number == 1:
+        return slice_info
+    raise ValueError(
+        f"{path} lacks slice metadata for plate {plate_number}; refusing to print"
+    )

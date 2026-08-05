@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
+from bambu_utils.ams import resolve_ams_slots
 from bambu_utils.config import PrinterConfig
 from bambu_utils.ftps import FileTransferClient, default_remote_path, normalize_remote_path
 from bambu_utils.mqtt import JsonObject, MqttClient
@@ -11,16 +12,19 @@ from bambu_utils.project import (
     SliceMetadata,
     file_md5,
     gcode_metadata,
+    sliced_3mf_filaments,
     sliced_3mf_metadata,
     sliced_3mf_plates,
     validate_slice_for_printer,
 )
 
+type AmsSelection = tuple[int, ...] | Literal["auto"] | None
+
 
 @dataclass(frozen=True, slots=True)
 class PrintOptions:
     plate: int = 1
-    ams_slots: tuple[int, ...] | None = None
+    ams_slots: AmsSelection = None
     bed_leveling: bool = True
     flow_calibration: bool = True
     vibration_calibration: bool = True
@@ -30,10 +34,18 @@ class PrintOptions:
     def __post_init__(self) -> None:
         if self.plate < 1:
             raise ValueError("plate must be at least 1")
-        if self.ams_slots is not None and not self.ams_slots:
+        if isinstance(self.ams_slots, tuple) and not self.ams_slots:
             raise ValueError("ams_slots must contain at least one slot")
-        if self.ams_slots is not None and any(slot < -1 for slot in self.ams_slots):
+        if isinstance(self.ams_slots, tuple) and any(
+            slot < -1 for slot in self.ams_slots
+        ):
             raise ValueError("AMS slots must be -1 (unmapped) or non-negative")
+
+
+@dataclass(frozen=True, slots=True)
+class PrintSubmission:
+    remote_path: str
+    ams_slots: tuple[int, ...] | None
 
 
 class BambuPrinter:
@@ -56,7 +68,7 @@ class BambuPrinter:
         *,
         remote_path: str | None = None,
         options: PrintOptions | None = None,
-    ) -> str:
+    ) -> PrintSubmission:
         """Upload a sliced 3MF or G-code file and start it."""
 
         local = local_path.expanduser().resolve(strict=True)
@@ -70,30 +82,48 @@ class BambuPrinter:
                 raise ValueError(
                     f"plate {selected.plate} is not present in {local}; available: {available}"
                 )
-            metadata = sliced_3mf_metadata(local, plates[selected.plate])
+            plate_path = plates[selected.plate]
+            metadata = sliced_3mf_metadata(local, plate_path)
+            command = "project_file"
+        elif local.name.lower().endswith(".gcode"):
+            if selected.ams_slots == "auto":
+                raise ValueError("--ams auto requires sliced 3MF filament metadata")
+            plate_path = None
+            metadata = gcode_metadata(local)
+            command = "gcode_file"
+        else:
+            raise ValueError("print input must be a sliced .3mf or a .gcode file")
+
+        status = self._mqtt.status()
+        self._validate_compatibility(metadata, status)
+        if selected.ams_slots == "auto":
+            if plate_path is None:
+                raise AssertionError("AMS auto mapping requires a sliced 3MF plate")
+            slots = resolve_ams_slots(
+                sliced_3mf_filaments(local, plate_path), status
+            )
+            selected = replace(selected, ams_slots=slots)
+
+        if plate_path is not None:
             payload = project_file_command(
                 sequence=self._mqtt.next_sequence(),
                 serial=self.config.serial,
                 local_path=local,
                 remote_path=remote,
-                plate_path=plates[selected.plate],
+                plate_path=plate_path,
                 options=selected,
             )
-            command = "project_file"
-        elif local.name.lower().endswith(".gcode"):
-            metadata = gcode_metadata(local)
+        else:
             payload = gcode_file_command(
                 sequence=self._mqtt.next_sequence(), remote_path=remote
             )
-            command = "gcode_file"
-        else:
-            raise ValueError("print input must be a sliced .3mf or a .gcode file")
-
-        self._validate_compatibility(metadata)
         self.files.upload(local, remote)
         self._mqtt.request(payload, section="print", command=command)
         self._mqtt.wait_for_print_start(remote)
-        return remote
+        resolved_slots = (
+            selected.ams_slots if isinstance(selected.ams_slots, tuple) else None
+        )
+        return PrintSubmission(remote, resolved_slots)
 
     def status(self) -> JsonObject:
         return self._mqtt.status()
@@ -111,12 +141,13 @@ class BambuPrinter:
         payload = print_control_command(self._mqtt.next_sequence(), command)
         return self._mqtt.request(payload, section="print", command=command, qos=1)
 
-    def _validate_compatibility(self, metadata: SliceMetadata) -> None:
+    def _validate_compatibility(
+        self, metadata: SliceMetadata, status: JsonObject
+    ) -> None:
         if self.config.printer_model is None:
             raise ValueError(
                 "BAMBU_PRINTER_MODEL is required for safe print submission"
             )
-        status = self._mqtt.status()
         detail = status.get("print")
         nozzle = detail.get("nozzle_diameter") if isinstance(detail, dict) else None
         nozzle_type = detail.get("nozzle_type") if isinstance(detail, dict) else None
@@ -171,7 +202,10 @@ def project_file_command(
     options: PrintOptions,
 ) -> JsonObject:
     remote = normalize_remote_path(remote_path)
-    ams_mapping, ams_mapping2 = _ams_mapping(options.ams_slots)
+    slots = options.ams_slots
+    if slots == "auto":
+        raise ValueError("AMS auto mapping must be resolved before command creation")
+    ams_mapping, ams_mapping2 = _ams_mapping(slots)
     name = Path(remote).name
     subtask_name = name.removesuffix(".3mf").removesuffix(".gcode")
     return cast(JsonObject, {
@@ -193,7 +227,7 @@ def project_file_command(
             "vibration_cali": options.vibration_calibration,
             "layer_inspect": options.layer_inspection,
             "timelapse": options.timelapse,
-            "use_ams": options.ams_slots is not None,
+            "use_ams": slots is not None,
             "ams_mapping": ams_mapping,
             "ams_mapping2": ams_mapping2,
         }
