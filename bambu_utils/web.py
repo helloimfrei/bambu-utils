@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from types import FrameType
 from typing import Annotated, Literal
 
 import uvicorn
@@ -82,8 +84,10 @@ def create_app(
     camera: CameraStream | None = None,
     history: RunHistory | None = None,
     printer: BambuPrinter | None = None,
+    shutdown_event: threading.Event | None = None,
     start_services: bool = True,
 ) -> FastAPI:
+    stopping = shutdown_event or threading.Event()
     status_monitor = monitor or PrinterMonitor(settings.printer)
     camera_stream = camera or CameraStream(settings.printer)
     run_history = history or RunHistory(settings.data_dir / "runs.sqlite3")
@@ -98,6 +102,7 @@ def create_app(
         try:
             yield
         finally:
+            stopping.set()
             if start_services:
                 status_monitor.stop()
             camera_stream.close()
@@ -118,10 +123,12 @@ def create_app(
     ) -> StreamingResponse:
         async def stream() -> AsyncGenerator[str]:
             version = -1
-            while not await request.is_disconnected():
+            while not stopping.is_set() and not await request.is_disconnected():
                 next_version, snapshot = await asyncio.to_thread(
-                    status_monitor.wait_for_update, version, 15
+                    status_monitor.wait_for_update, version, 1
                 )
+                if stopping.is_set():
+                    return
                 if next_version == version:
                     yield ": keep-alive\n\n"
                     continue
@@ -168,7 +175,7 @@ def create_app(
                 detail="local camera streaming is currently implemented for A1/P1 printers",
             )
         return StreamingResponse(
-            camera_stream.iter_mjpeg(),
+            camera_stream.iter_mjpeg(stopping),
             media_type="multipart/x-mixed-replace; boundary=frame",
             headers={"Cache-Control": "no-store"},
         )
@@ -210,13 +217,31 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     settings = DashboardSettings.from_environment()
-    uvicorn.run(
-        create_app(settings),
+    stopping = threading.Event()
+    config = uvicorn.Config(
+        create_app(settings, shutdown_event=stopping),
         host=settings.listen_host,
         port=settings.listen_port,
         workers=1,
         access_log=False,
+        timeout_graceful_shutdown=3,
     )
+    try:
+        _DashboardServer(config, stopping).run()
+    except KeyboardInterrupt:
+        pass
+
+
+class _DashboardServer(uvicorn.Server):
+    def __init__(
+        self, config: uvicorn.Config, shutdown_event: threading.Event
+    ) -> None:
+        super().__init__(config)
+        self._shutdown_event = shutdown_event
+
+    def handle_exit(self, sig: int, frame: FrameType | None) -> None:
+        self._shutdown_event.set()
+        super().handle_exit(sig, frame)
 
 
 def _required_setting(value: str | None, name: str) -> str:

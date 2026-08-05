@@ -34,9 +34,12 @@ class CameraStream:
         with self._condition:
             return self._error
 
-    def iter_mjpeg(self) -> Iterator[bytes]:
+    def iter_mjpeg(
+        self, shutdown_event: threading.Event | None = None
+    ) -> Iterator[bytes]:
+        external_stop = shutdown_event or threading.Event()
         with self._condition:
-            if self._shutdown:
+            if self._shutdown or external_stop.is_set():
                 return
             self._viewers += 1
             self._start_thread_locked()
@@ -45,10 +48,14 @@ class CameraStream:
             while True:
                 with self._condition:
                     self._condition.wait_for(
-                        lambda: self._sequence != sequence or self._shutdown,
-                        timeout=15,
+                        lambda: (
+                            self._sequence != sequence
+                            or self._shutdown
+                            or external_stop.is_set()
+                        ),
+                        timeout=1,
                     )
-                    if self._shutdown:
+                    if self._shutdown or external_stop.is_set():
                         return
                     if self._sequence == sequence or self._frame is None:
                         continue
@@ -93,6 +100,8 @@ class CameraStream:
                 try:
                     self._stream()
                 except (ConnectionError, OSError, RuntimeError, ssl.SSLError) as error:
+                    if self._stop.is_set():
+                        break
                     _LOGGER.warning("camera stream failed: %s", error)
                     with self._condition:
                         self._error = str(error)
